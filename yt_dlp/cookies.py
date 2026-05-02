@@ -10,6 +10,7 @@ import http.cookies
 import io
 import json
 import os
+import plistlib
 import re
 import shutil
 import struct
@@ -47,7 +48,7 @@ from .utils._utils import _YDLLogger
 from .utils.networking import normalize_url
 
 CHROMIUM_BASED_BROWSERS = {'brave', 'chrome', 'chromium', 'edge', 'opera', 'vivaldi', 'whale'}
-SUPPORTED_BROWSERS = CHROMIUM_BASED_BROWSERS | {'firefox', 'safari'}
+SUPPORTED_BROWSERS = CHROMIUM_BASED_BROWSERS | {'firefox', 'safari', 'orion'}
 
 
 class YDLLogger(_YDLLogger):
@@ -118,6 +119,8 @@ def extract_cookies_from_browser(browser_name, profile=None, logger=YDLLogger(),
         return _extract_firefox_cookies(profile, container, logger)
     elif browser_name == 'safari':
         return _extract_safari_cookies(profile, logger)
+    elif browser_name == 'orion':
+        return _extract_orion_cookies(profile, logger)
     elif browser_name in CHROMIUM_BASED_BROWSERS:
         return _extract_chrome_cookies(browser_name, profile, keyring, logger)
     else:
@@ -589,6 +592,58 @@ def _extract_safari_cookies(profile, logger):
     jar = parse_safari_cookies(cookies_data, logger=logger)
     logger.info(f'Extracted {len(jar)} cookies from safari')
     return jar
+
+
+def _extract_orion_cookies(profile, logger):
+    if sys.platform != 'darwin':
+        raise ValueError(f'unsupported platform: {sys.platform}')
+
+    base_dir = os.path.expanduser('~/Library/Application Support/Orion')
+
+    if profile and _is_path(profile):
+        path = os.path.expanduser(profile)
+        cookies_path = path if os.path.isfile(path) else os.path.join(path, 'cookies')
+    else:
+        cookies_path = os.path.join(_orion_profile_dir(base_dir, profile), 'cookies')
+
+    if not os.path.isfile(cookies_path):
+        raise FileNotFoundError(f'could not find orion cookies database at {cookies_path}')
+
+    with open(cookies_path, 'rb') as f:
+        cookies_data = f.read()
+
+    jar = parse_safari_cookies(cookies_data, logger=logger)
+    logger.info(f'Extracted {len(jar)} cookies from orion')
+    return jar
+
+
+def _orion_profile_dir(base_dir, profile):
+    if not profile:
+        candidates = [
+            os.path.join(base_dir, name, 'cookies') for name in os.listdir(base_dir)
+            if os.path.isfile(os.path.join(base_dir, name, 'cookies'))
+        ]
+        newest = _newest(candidates)
+        if newest is None:
+            raise FileNotFoundError(f'no orion profile with cookies found under {base_dir}')
+        return os.path.dirname(newest)
+
+    direct = os.path.join(base_dir, profile)
+    if os.path.isdir(direct):
+        return direct
+
+    plist_path = os.path.join(base_dir, 'profiles')
+    if os.path.isfile(plist_path):
+        with open(plist_path, 'rb') as f:
+            data = plistlib.load(f)
+        entries = [data.get('defaults') or {}, *(data.get('profiles') or [])]
+        for entry in entries:
+            if entry.get('name') == profile:
+                resolved = os.path.join(base_dir, entry.get('identifier', ''))
+                if os.path.isdir(resolved):
+                    return resolved
+
+    raise FileNotFoundError(f'orion profile not found: {profile!r}')
 
 
 class ParserError(Exception):
